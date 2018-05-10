@@ -37,17 +37,23 @@ from paramiko.message import Message
 from paramiko.pkey import PKey
 from paramiko.util import retry_on_signal
 
+SSH_AGENT_FAILURE = 5
+SSH_AGENT_SUCCESS = 6
 cSSH2_AGENTC_REQUEST_IDENTITIES = byte_chr(11)
 SSH2_AGENT_IDENTITIES_ANSWER = 12
 cSSH2_AGENTC_SIGN_REQUEST = byte_chr(13)
 SSH2_AGENT_SIGN_RESPONSE = 14
-
+cSSH_AGENTC_ADD_IDENTITY = byte_chr(17)
+cSSH_AGENTC_REMOVE_IDENTITY = byte_chr(18)
+cSSH_AGENTC_REMOVE_ALL_IDENTITIES = byte_chr(19)
+cSSH_AGENTC_ADD_ID_CONSTRAINED = byte_chr(25)
+cSSH_AGENTC_CONSTRAIN_LIFETIME = byte_chr(1)
+cSSH_AGENTC_CONSTRAIN_CONFIRM = byte_chr(2)
 
 
 class AgentSSH(object):
     def __init__(self):
         self._conn = None
-        self._keys = ()
 
     def get_keys(self):
         """
@@ -59,26 +65,72 @@ class AgentSSH(object):
             a tuple of `.AgentKey` objects representing keys available on the
             SSH agent
         """
-        return self._keys
-
-    def _connect(self, conn):
-        self._conn = conn
+        if not self._conn:
+            return tuple()
         ptype, result = self._send_message(cSSH2_AGENTC_REQUEST_IDENTITIES)
         if ptype != SSH2_AGENT_IDENTITIES_ANSWER:
             raise SSHException('could not get keys from ssh-agent')
         keys = []
         for i in range(result.get_int()):
-            keys.append(AgentKey(self, result.get_binary()))
-            result.get_string()
-        self._keys = tuple(keys)
+            keys.append(AgentKey(self, result.get_binary(), result.get_string()))
+        return tuple(keys)
+
+    def add_key(self, key, comment='', lifetime=None, confirm=False):
+        """
+        Add a key to the SSH agent.
+
+        :raises SSHException: if adding the key fails
+        """
+        msg = Message()
+        if lifetime or confirm:
+            msg.add_byte(cSSH_AGENTC_ADD_ID_CONSTRAINED)
+        else:
+            msg.add_byte(cSSH_AGENTC_ADD_IDENTITY)
+        msg.add_bytes(key.asagentbytes())
+        msg.add_string(comment)
+        if lifetime:
+            msg.add_byte(cSSH_AGENT_CONSTRAIN_LIFETIME)
+            msg.add_int(lifetime)
+        if confirm:
+            msg.add_byte(cSSH_AGENT_CONSTRAIN_CONFIRM)
+        ptype, result = self._send_message(msg)
+        if ptype != SSH_AGENT_SUCCESS:
+            raise paramiko.SSHException("Unable to add key to agent")
+
+    def delete_key(self, key):
+        """
+        Remove a key from the ssh agent.
+
+        :raises SSHException: if removing the key fails
+        """
+        msg = Message()
+        msg.add_byte(cSSH_AGENTC_REMOVE_IDENTITY)
+        msg.add_string(key.asbytes())
+        ptype, result = self._send_message(msg)
+        if ptype != SSH_AGENT_SUCCESS:
+            raise paramiko.SSHException("Unable to delete key from agent")
+
+    def delete_all_keys(self):
+        """
+        Remove all keys from the ssh agent.
+
+        :raises SSHException: if removing the keys fails
+        """
+        ptype, result = self._send_message(cSSH2_AGENTC_REQUEST_IDENTITIES)
+        if ptype != SSH2_AGENT_SUCCESS:
+            raise SSHException('could not delete keys from agent')
+
+    def _connect(self, conn):
+        self._conn = conn
 
     def _close(self):
         if self._conn is not None:
             self._conn.close()
         self._conn = None
-        self._keys = ()
 
     def _send_message(self, msg):
+        if not self._conn:
+            raise SSHException("Agent not connected")
         msg = asbytes(msg)
         self._conn.send(struct.pack('>I', len(msg)) + msg)
         l = self._read_all(4)
@@ -377,6 +429,29 @@ class Agent(AgentSSH):
         """
         self._close()
 
+class ForwardedAgent(AgentSSH):
+    """
+    Client interface to be for using private keys from an SSH agent forwarded
+    to a paramiko ssh server. This class is only usable from server code.
+
+    :raises SSHException:
+        if an SSH agent is found, but speaks an incompatible protocol
+    """
+    def __init__(self, t):
+        AgentSSH.__init__(self)
+        self.__t = t
+
+    def __del__(self):
+        self.close()
+
+    def connect(self):
+        conn_sock = self.__t.open_forward_agent_channel()
+        if conn_sock is None:
+            raise paramiko.SSHException('lost ssh-agent')
+        self._connect(conn_sock)
+
+    def close(self):
+        self._close()
 
 class AgentKey(PKey):
     """
@@ -384,11 +459,12 @@ class AgentKey(PKey):
     authenticating to a remote server (signing).  Most other key operations
     work as expected.
     """
-    def __init__(self, agent, blob):
+    def __init__(self, agent, blob, comment):
         self.agent = agent
         self.blob = blob
         self.public_blob = None
         self.name = Message(blob).get_text()
+        self.comment = comment
 
     def asbytes(self):
         return self.blob
@@ -398,6 +474,9 @@ class AgentKey(PKey):
 
     def get_name(self):
         return self.name
+
+    def get_comment(self):
+        return self.comment
 
     def sign_ssh_data(self, data):
         msg = Message()
