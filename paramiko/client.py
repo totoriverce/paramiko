@@ -238,6 +238,8 @@ class SSHClient(ClosingContextManager):
         passphrase=None,
         disabled_algorithms=None,
         transport_factory=None,
+        resend_service_requests=True,
+        start_with_auth_none=False,
     ):
         """
         Connect to an SSH server and authenticate to it.  The server's host key
@@ -323,6 +325,13 @@ class SSHClient(ClosingContextManager):
             functionality, and algorithm selection) and generates a
             `.Transport` instance to be used by this client. Defaults to
             `.Transport.__init__`.
+        :param bool resend_service_requests:
+            ``False`` if you want to prevent Paramiko from sending other
+            service requests after the server has already accepted one
+            for this service.
+        :param bool start_with_auth_none:
+            ```True`` if you want to send an authentication request with
+            the 'none' method before trying other authentication methods.
 
         :raises BadHostKeyException:
             if the server's host key could not be verified.
@@ -394,6 +403,7 @@ class SSHClient(ClosingContextManager):
             gss_kex=gss_kex,
             gss_deleg_creds=gss_deleg_creds,
             disabled_algorithms=disabled_algorithms,
+            resend_service_requests=resend_service_requests,
         )
         t.use_compression(compress=compress)
         t.set_gss_host(
@@ -468,6 +478,7 @@ class SSHClient(ClosingContextManager):
             gss_deleg_creds,
             t.gss_host,
             passphrase,
+            start_with_auth_none,
         )
 
     def close(self):
@@ -636,10 +647,11 @@ class SSHClient(ClosingContextManager):
         gss_deleg_creds,
         gss_host,
         passphrase,
+        start_with_auth_none,
     ):
         """
         Try, in order:
-
+            - None method if start_with_auth_none is True
             - The key(s) passed in, if one was passed in.
             - Any key we can find through an SSH agent (if allowed).
             - Any "id_rsa", "id_dsa" or "id_ecdsa" key discoverable in ~/.ssh/
@@ -656,6 +668,13 @@ class SSHClient(ClosingContextManager):
         two_factor_types = {"keyboard-interactive", "password"}
         if passphrase is None and password is not None:
             passphrase = password
+
+        if start_with_auth_none:
+            try:
+                self._transport.auth_none(username)
+                return
+            except SSHException as e:
+                saved_exception = e
 
         # If GSS-API support and GSS-PI Key Exchange was performed, we attempt
         # authentication with gssapi-keyex.
