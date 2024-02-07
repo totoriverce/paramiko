@@ -120,7 +120,7 @@ class Packetizer:
 
         # keepalives:
         self.__keepalive_interval = 0
-        self.__keepalive_last = time.time()
+        self.__keepalive_last = time.monotonic()
         self.__keepalive_callback = None
 
         self.__timer = None
@@ -241,7 +241,7 @@ class Packetizer:
         """
         self.__keepalive_interval = interval
         self.__keepalive_callback = callback
-        self.__keepalive_last = time.time()
+        self.__keepalive_last = time.monotonic()
 
     def read_timer(self):
         self.__timer_expired = True
@@ -332,7 +332,7 @@ class Packetizer:
         return out
 
     def write_all(self, out):
-        self.__keepalive_last = time.time()
+        self.__keepalive_last = time.monotonic()
         iteration_with_zero_as_return_value = 0
         while len(out) > 0:
             retry_write = False
@@ -604,13 +604,13 @@ class Packetizer:
         ):
             # wait till we're encrypting, and not in the middle of rekeying
             return
-        now = time.time()
+        now = time.monotonic()
         if now > self.__keepalive_last + self.__keepalive_interval:
             self.__keepalive_callback()
             self.__keepalive_last = now
 
     def _read_timeout(self, timeout):
-        start = time.time()
+        start = time.monotonic()
         while True:
             try:
                 x = self.__socket.recv(128)
@@ -621,7 +621,7 @@ class Packetizer:
                 pass
             if self.__closed:
                 raise EOFError()
-            now = time.time()
+            now = time.monotonic()
             if now - start >= timeout:
                 raise socket.timeout()
         return x
