@@ -1,6 +1,9 @@
 =========
 Changelog
 =========
+- :bug:`2258` auth_handler: properly check that public_blob attr exists
+  Fix an issue where an error `AttributeError: public_blob` is raised when
+  a complex connection chain is used.
 
 - :bug:`2353` Fix a 64-bit-ism in the test suite so the tests don't encounter a
   false negative on 32-bit systems. Reported by Stanislav Levin.
